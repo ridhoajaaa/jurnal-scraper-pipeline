@@ -34,24 +34,31 @@ This project uses a three-stage pipeline to assist in literature reviews for aca
 ## Installation & Usage
 
 ### 1. Scraper Setup
+
 ```bash
 cd scraper
 npm install
 node index.js
+```
 
 ### 2. Processor Setup
+
 ```bash
 cd processor
 pip install pandas xlsxwriter
 python main.py
+```
 
 ### 3. Web Dashboard Setup
+
 ```bash
 cd web
 npm install
 node server.js
+```
 
 ## Limitations
+
 - `Access Restrictions`: Some high-security publishers (e.g., Elsevier, IEEE) may enforce CAPTCHA or paywalls that require manual intervention via the visible browser window.
 - `PDF Scoping`: The current engine identifies direct PDF links but does not perform internal text parsing on PDF files.
-- `Metadata Fallbac`: If a deep abstract is blocked by a server, the tool automatically falls back to the Google Scholar snippet to maintain dataset continuity.
+- `Metadata Fallback`: If a deep abstract is blocked by a server, the tool automatically falls back to the Google Scholar snippet to maintain dataset continuity.
