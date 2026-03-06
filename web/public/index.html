@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="id" x-data="{ darkMode: localStorage.getItem('dark') === 'true' }" :class="{ 'dark': darkMode }">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thesis Literature Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#0f172a',
+                        darkCard: '#1e293b'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-darkBg text-slate-800 dark:text-slate-200 font-sans antialiased pb-12 transition-colors duration-300">
+
+    <!-- Navbar -->
+    <header class="bg-white dark:bg-darkCard shadow-sm border-b border-slate-200 dark:border-slate-700 sticky top-0 z-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <span class="text-3xl">🎓</span>
+                <div>
+                    <h1 class="text-xl font-bold text-slate-900 dark:text-white leading-tight">Literature Assistant</h1>
+                    <p class="text-xs text-slate-500 dark:text-slate-400 font-medium">Hybrid Pipeline v5.0</p>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-4">
+                <!-- Tombol Dark Mode -->
+                <button @click="darkMode = !darkMode; localStorage.setItem('dark', darkMode)" 
+                    class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all">
+                    <template x-if="!darkMode">
+                        <svg class="w-5 h-5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+                    </template>
+                    <template x-if="darkMode">
+                        <svg class="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 18v1m9-9h1M4 12H3m15.364-6.364l.707-.707M6.343 17.657l-.707-.707m12.728 0l-.707.707M6.343 6.343l-.707.707M12 8a4 4 0 100 8 4 4 0 000-8z"></path></svg>
+                    </template>
+                </button>
+                <div id="stats" class="text-sm font-medium bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-4 py-2 rounded-full border border-indigo-100 dark:border-indigo-800 hidden sm:block">
+                    ...
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 flex flex-col lg:flex-row gap-8">
+        
+        <!-- Sidebar Filter -->
+        <aside class="w-full lg:w-1/4 shrink-0">
+            <div class="bg-white dark:bg-darkCard p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 sticky top-28">
+                <h2 class="text-base font-bold mb-5 flex items-center gap-2">
+                    🔍 Filter Pencarian
+                </h2>
+                
+                <div class="mb-5">
+                    <label class="block text-xs font-semibold text-slate-500 uppercase mb-2">Kata Kunci</label>
+                    <input type="text" id="searchInput" placeholder="Cari judul..." 
+                        class="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 dark:text-white outline-none">
+                </div>
+
+                <div class="mb-5">
+                    <label class="block text-xs font-semibold text-slate-500 uppercase mb-2">Tahun Terbit</label>
+                    <select id="yearFilter" class="w-full px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm dark:text-white outline-none">
+                        <option value="ALL">Semua Tahun</option>
+                    </select>
+                </div>
+
+                <button onclick="renderData()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-xl transition-all shadow-md active:scale-95">
+                    Terapkan Filter
+                </button>
+            </div>
+        </aside>
+
+        <!-- Konten -->
+        <div class="w-full lg:w-3/4">
+            <!-- Tabs -->
+            <div class="flex p-1 bg-slate-200 dark:bg-slate-800 rounded-xl mb-8 w-fit border border-slate-300 dark:border-slate-700">
+                <button id="btn-jurnal" onclick="switchTab('jurnal')" class="px-8 py-2.5 rounded-lg font-semibold text-sm transition-all shadow bg-white dark:bg-indigo-600 text-indigo-600 dark:text-white">
+                    📄 Jurnal Ilmiah
+                </button>
+                <button id="btn-buku" onclick="switchTab('buku')" class="px-8 py-2.5 rounded-lg font-semibold text-sm transition-all text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white">
+                    📚 Referensi Buku
+                </button>
+            </div>
+
+            <h3 id="resultHeader" class="text-lg font-bold mb-4">Menampilkan Hasil</h3>
+            <div id="resultContainer" class="flex flex-col gap-4 fade-in">
+                <!-- JS Rendered -->
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let globalData = [];
+        let currentTab = 'jurnal';
+
+        async function loadData() {
+            try {
+                const response = await fetch('/api/data');
+                globalData = await response.json();
+                populateYearDropdown();
+                updateGlobalStats();
+                renderData();
+            } catch (error) {
+                document.getElementById('resultContainer').innerHTML = `<p class="text-center text-red-500">Gagal mengambil data JSON.</p>`;
+            }
+        }
+
+        function populateYearDropdown() {
+            const years = [...new Set(globalData.map(item => item.tahun))].filter(y => y !== "N/A").sort((a,b) => b-a);
+            const select = document.getElementById('yearFilter');
+            years.forEach(year => select.innerHTML += `<option value="${year}">${year}</option>`);
+        }
+
+        function updateGlobalStats() {
+            const journals = globalData.filter(i => !isBook(i.judul)).length;
+            const books = globalData.length - journals;
+            document.getElementById('stats').innerHTML = `<b>${journals}</b> Jurnal | <b>${books}</b> Buku`;
+        }
+
+        function isBook(t) {
+            const title = t.toUpperCase();
+            return title.includes('[BUKU') || title.includes('[BOOK') || title.includes('[B]');
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            const btnJurnal = document.getElementById('btn-jurnal');
+            const btnBuku = document.getElementById('btn-buku');
+            const active = "px-8 py-2.5 rounded-lg font-semibold text-sm transition-all shadow bg-white dark:bg-indigo-600 text-indigo-600 dark:text-white";
+            const inactive = "px-8 py-2.5 rounded-lg font-semibold text-sm transition-all text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white";
+            
+            btnJurnal.className = (tab === 'jurnal' ? active : inactive);
+            btnBuku.className = (tab === 'buku' ? active : inactive);
+            renderData();
+        }
+
+        function renderData() {
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            const year = document.getElementById('yearFilter').value;
+            const container = document.getElementById('resultContainer');
+            
+            const filtered = globalData.filter(item => {
+                const bookStatus = isBook(item.judul);
+                if (currentTab === 'jurnal' && bookStatus) return false;
+                if (currentTab === 'buku' && !bookStatus) return false;
+                if (year !== "ALL" && item.tahun !== year) return false;
+                if (search && !item.judul.toLowerCase().includes(search) && !item.abstrak_lengkap.toLowerCase().includes(search)) return false;
+                return true;
+            });
+
+            document.getElementById('resultHeader').innerText = `Ditemukan ${filtered.length} ${currentTab.toUpperCase()}`;
+
+            if (filtered.length === 0) {
+                container.innerHTML = `<div class="text-center py-20 bg-white dark:bg-darkCard rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 text-slate-400">Data tidak ditemukan</div>`;
+                return;
+            }
+
+            container.innerHTML = filtered.map((item, idx) => {
+                const hasLink = item.link && item.link !== "null" && !item.link.includes('books.google');
+                const citation = `Anonim. (${item.tahun}). ${item.judul.replace(/\[.*?\]\s*/g, '')}. Link: ${hasLink ? item.link : 'Tidak tersedia'}`;
+                
+                return `
+                <div x-data="{ open: false }" class="bg-white dark:bg-darkCard rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden transition-all hover:shadow-md">
+                    <div @click="open = !open" class="p-5 cursor-pointer flex justify-between items-start gap-4 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                        <div>
+                            <span class="text-[10px] font-black px-2 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 uppercase tracking-tighter">${item.tahun}</span>
+                            <h3 class="mt-2 font-bold text-slate-800 dark:text-slate-100 leading-tight">${item.judul}</h3>
+                        </div>
+                        <svg :class="open ? 'rotate-180' : ''" class="w-5 h-5 text-slate-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </div>
+                    <div x-show="open" x-collapse x-cloak>
+                        <div class="px-5 pb-5 pt-2 border-t border-slate-100 dark:border-slate-700 bg-slate-50/30 dark:bg-slate-900/20">
+                            <div class="mb-4">
+                                <span class="text-[10px] font-bold text-slate-400 uppercase">Analisis Fokus</span>
+                                <div class="flex flex-wrap gap-2 mt-1">
+                                    ${item.Poin_Penting.split('|').map(p => `<span class="px-2 py-0.5 text-[10px] font-bold rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">${p.trim()}</span>`).join('')}
+                                </div>
+                            </div>
+                            <div class="p-4 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-inner">
+                                <div class="flex justify-between items-center mb-2">
+                                    <span class="text-[10px] font-bold text-slate-400 uppercase">Abstrak</span>
+                                    ${hasLink ? `<a href="${item.link}" target="_blank" class="text-indigo-500 text-[10px] font-bold hover:underline">SUMBER ASLI ↗</a>` : `<span class="text-[10px] text-slate-500 italic">LINK TIDAK TERSEDIA</span>`}
+                                </div>
+                                <p class="text-sm leading-relaxed text-slate-600 dark:text-slate-300 text-justify">${item.abstrak_lengkap}</p>
+                            </div>
+                            <div class="mt-4">
+                                <span class="text-[10px] font-bold text-slate-400 uppercase">Sitasi Otomatis</span>
+                                <div class="flex mt-1">
+                                    <input type="text" readonly value="${citation}" class="flex-1 text-[10px] bg-slate-100 dark:bg-slate-900 p-2 rounded-l-lg border-r-0 border border-slate-200 dark:border-slate-700 outline-none">
+                                    <button onclick="navigator.clipboard.writeText('${citation}')" class="px-4 bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-200 text-[10px] font-bold rounded-r-lg hover:bg-indigo-500 hover:text-white transition-colors">COPY</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        document.getElementById('searchInput').addEventListener('input', renderData);
+        document.getElementById('yearFilter').addEventListener('change', renderData);
+        window.onload = loadData;
+    </script>
+</body>
+</html>

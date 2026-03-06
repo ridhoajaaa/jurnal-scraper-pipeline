@@ -11,6 +11,7 @@ env/
 .pytest_cache/
 
 # Data & Outputs
+data/jurnal_bersih.json
 data/jurnal_mentah.json
 data/jurnal_siap_skripsi.xlsx
 
