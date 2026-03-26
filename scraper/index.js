@@ -3,6 +3,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const CONFIG = require('./config');
 
 puppeteer.use(StealthPlugin());
 
@@ -13,19 +14,26 @@ const hapusLama = process.argv[3 + argOffset] || 'n';
 const source = (process.argv[4 + argOffset] || 'scholar').toLowerCase();
 const apiKey = process.argv[5 + argOffset] || '';
 const yearFrom = parseInt(process.argv[6 + argOffset]) || 2020;
-const yearTo = parseInt(process.argv[7 + argOffset]) || new Date().getFullYear();
+const currentYear = new Date().getFullYear();
+let yearTo = parseInt(process.argv[7 + argOffset]) || currentYear;
+
+// Cap yearTo to current year + 1 (untuk early access papers)
+if (yearTo > currentYear + 1) {
+    console.log(`⚠️  Year ${yearTo} is in the future. Capping to ${currentYear + 1}.`);
+    yearTo = currentYear + 1;
+}
 const TARGET = Math.min(parseInt(process.argv[8 + argOffset]) || 10, 50);
 
 const JOB_ID = process.argv[9 + argOffset] || process.env.JOB_ID || 'standalone';
 const DATA_PATH = path.join(__dirname, `../data/jurnal_mentah_${JOB_ID}.json`);
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
-// ─── Quality constants ────────────────────────────────────────────────────────
-const CITATION_MIN = 3;    // min citations — skip jika di bawah ini
-const SKIP_CITATION_YEAR = 2024; // tahun ini ke atas bebas dari citation filter
-const RESERVED_CITATION_MIN = 3;    // min citations untuk masuk reserved slot
-const MAX_RESERVED_SLOTS = 15;   // max jurnal tanpa abstract per scrape
-const ABSTRACT_MIN_LENGTH = 150;  // min karakter abstract yang diterima
+// ─── Quality constants (from config) ──────────────────────────────────────────
+const CITATION_MIN = CONFIG.QUALITY.MIN_CITATION;
+const SKIP_CITATION_YEAR = CONFIG.QUALITY.SKIP_CITATION_YEAR;
+const RESERVED_CITATION_MIN = CONFIG.QUALITY.RESERVED_CITATION_MIN;
+const MAX_RESERVED_SLOTS = CONFIG.QUALITY.MAX_RESERVED_SLOTS;
+const ABSTRACT_MIN_LENGTH = CONFIG.QUALITY.ABSTRACT_MIN_LENGTH;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -49,13 +57,49 @@ function cleanAbstract(text) {
 }
 
 /**
- * Returns true jika paper lolos citation quality filter.
- * Papers dari SKIP_CITATION_YEAR ke atas dibebaskan (terlalu baru).
+ * Smart citation quality filter - age aware
+ * Paper baru: bebas citasi requirement
+ * Paper 2-5 tahun: minimal 1 citasi per 2 tahun
+ * Paper > 5 tahun: minimal 3 citasi total
+ * Paper dengan potensi: minimal 1 citasi (bisa enrichment)
  */
 function passesCitationFilter(citationCount, yearStr) {
     const yr = parseInt(yearStr);
-    if (!isNaN(yr) && yr >= SKIP_CITATION_YEAR) return true;
-    return (citationCount || 0) >= CITATION_MIN;
+    const currentYear = new Date().getFullYear();
+    if (isNaN(yr)) return true; // Kalau tahun tidak valid, jangan filter
+
+    const age = currentYear - yr;
+    const citations = citationCount || 0;
+
+    // Paper tahun ini atau tahun lalu: bebas
+    if (age <= 1) return true;
+
+    // Paper 2-3 tahun: minimal 1 citasi
+    if (age <= 3) return citations >= 1;
+
+    // Paper 4-5 tahun: minimal 2 citasi
+    if (age <= 5) return citations >= 2;
+
+    // Paper > 5 tahun: minimal 3 citasi
+    return citations >= CITATION_MIN;
+}
+
+/**
+ * Get quality tier berdasarkan citation + age (untuk ranking)
+ */
+function getCitationTier(citationCount, yearStr) {
+    const yr = parseInt(yearStr);
+    const currentYear = new Date().getFullYear();
+    if (isNaN(yr)) return 'unknown';
+
+    const age = currentYear - yr;
+    const citations = citationCount || 0;
+    const rate = age > 0 ? citations / age : citations;
+
+    if (rate >= 10) return 'high';      // > 10 citasi per tahun
+    if (rate >= 3) return 'medium';     // 3-10 citasi per tahun
+    if (rate >= 1) return 'low';        // 1-3 citasi per tahun
+    return 'minimal';                   // < 1 citasi per tahun
 }
 
 function emitProgress(current, total) {
@@ -93,21 +137,27 @@ async function fetchAbstractByDOI(doi) {
     try {
         const data = await httpsGet(
             `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}?fields=abstract,title`,
-            {}
+            {},
+            CONFIG.RETRY.API_MAX
         );
         const abs = cleanAbstract(data?.abstract);
         if (abs && abs.length >= ABSTRACT_MIN_LENGTH) return abs;
-    } catch { /* continue */ }
+    } catch (err) {
+        console.error(`[Semantic Scholar] Failed for DOI:${doi}: ${err.message}`);
+    }
 
     // 2. CrossRef
     try {
         const data = await httpsGet(
             `https://api.crossref.org/works/${encodeURIComponent(doi)}`,
-            { 'User-Agent': 'LiteratureAssistant/2.0 (mailto:research@example.com)' }
+            { 'User-Agent': `${CONFIG.HEADERS.USER_AGENT} (${CONFIG.HEADERS.EMAIL_CONTACT})` },
+            CONFIG.RETRY.API_MAX
         );
         const abs = cleanAbstract(data?.message?.abstract);
         if (abs && abs.length >= ABSTRACT_MIN_LENGTH) return abs;
-    } catch { /* continue */ }
+    } catch (err) {
+        console.error(`[CrossRef] Failed for DOI:${doi}: ${err.message}`);
+    }
 
     return null;
 }
@@ -122,48 +172,140 @@ function isDuplicate(title, existing) {
 }
 
 /**
- * Tiered keyword relevance check.
- * Tier 1: exact phrase in title        → 'title'
- * Tier 2: exact phrase in abstract     → 'abstract'
- * Tier 3: not found anywhere           → null (skip)
+ * Smart keyword relevance check - partial matching
+ * Relevance score: 0.0 - 1.0 based on token overlap
+ * Tier 1: score >= 0.7 in title       → 'title-high'
+ * Tier 2: score >= 0.5 in title       → 'title-medium'
+ * Tier 3: score >= 0.7 in abstract    → 'abstract-high'
+ * Tier 4: score >= 0.5 in abstract    → 'abstract-medium'
+ * Tier 5: score < 0.5                 → null (skip)
  *
- * Uses exact phrase match — "machine learning" must appear as-is,
- * not just individual words scattered in the text.
+ * Contoh: keyword "machine learning"
+ * - "Deep Learning for Machine Vision" → title-medium (50% match)
+ * - "Machine Learning Applications"    → title-high (100% match)
+ * - "Learning Machines in Healthcare"  → title-medium (partial match)
  */
-function getKeywordTier(keyword, title, abstract) {
-    const phrase = keyword.trim().toLowerCase();
-    const t = (title || '').toLowerCase();
-    const a = (abstract || '').toLowerCase();
-    if (t.includes(phrase)) return 'title';
-    if (a.includes(phrase)) return 'abstract';
-    return null;
+function getKeywordRelevance(keyword, text) {
+    if (!keyword || !text) return 0;
+
+    const keyTokens = keyword.toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(t => t.length > 2);  // Abaikan kata pendek (the, in, of, dll)
+
+    if (keyTokens.length === 0) return 0;
+
+    const textLower = text.toLowerCase();
+    let matchedTokens = 0;
+
+    for (const token of keyTokens) {
+        // Cek exact match atau partial match (untuk kata majemuk)
+        if (textLower.includes(token)) {
+            matchedTokens++;
+        } else {
+            // Cek apakah token ini ada sebagai substring dalam kata lain
+            // Contoh: "learning" dalam "deep learning" atau "machine learning"
+            const words = textLower.split(/\s+/);
+            if (words.some(w => w.includes(token) || token.includes(w))) {
+                matchedTokens += 0.5;  // Partial match, setengah poin
+            }
+        }
+    }
+
+    return matchedTokens / keyTokens.length;
 }
 
-function httpsGet(url, headers = {}, retries = 3) {
+function getKeywordTier(keyword, title, abstract) {
+    const titleRel = getKeywordRelevance(keyword, title);
+    const abstractRel = getKeywordRelevance(keyword, abstract);
+
+    // Priority: title match lebih tinggi dari abstract match
+    if (titleRel >= 0.7) return 'title-high';
+    if (titleRel >= 0.5) return 'title-medium';
+    if (abstractRel >= 0.7) return 'abstract-high';
+    if (abstractRel >= 0.5) return 'abstract-medium';
+
+    return null;  // Skip kalau relevance terlalu rendah
+}
+
+/**
+ * Get relevance score untuk ranking (0-100)
+ */
+function getRelevanceScore(keyword, title, abstract) {
+    const titleRel = getKeywordRelevance(keyword, title);
+    const abstractRel = getKeywordRelevance(keyword, abstract);
+
+    // Title match lebih berbobot (70%) daripada abstract (30%)
+    const score = (titleRel * 0.7 + abstractRel * 0.3) * 100;
+    return Math.round(score);
+}
+
+/**
+ * HTTPS GET dengan retry logic dan exponential backoff
+ * Handle 429 Too Many Requests dengan delay yang meningkat
+ */
+function httpsGet(url, headers = {}, retries = CONFIG.RETRY.API_MAX) {
     return new Promise((resolve, reject) => {
-        const attempt = (n) => {
+        const attempt = (n, delayMs = CONFIG.DELAY.RETRY_BACKOFF) => {
             const options = {
-                headers: { 'User-Agent': 'LiteratureAssistant/2.0', ...headers },
-                timeout: 25000
+                headers: { 'User-Agent': CONFIG.HEADERS.USER_AGENT, ...headers },
+                timeout: CONFIG.TIMEOUT.API_CALL
             };
             const req = https.get(url, options, (res) => {
+                // Handle redirect
                 if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                     return httpsGet(res.headers.location, headers, retries).then(resolve).catch(reject);
                 }
+
+                // Handle rate limit (429) dengan exponential backoff
+                if (res.statusCode === 429) {
+                    const retryAfter = parseInt(res.headers['retry-after']) || 0;
+                    const waitMs = retryAfter * 1000 || delayMs;
+                    console.warn(`[httpsGet] Rate limited (429). Waiting ${waitMs}ms before retry ${CONFIG.RETRY.API_MAX - n + 1}...`);
+                    if (n > 1) {
+                        setTimeout(() => attempt(n - 1, delayMs * 2), waitMs);
+                    } else {
+                        reject(new Error('Rate limit exceeded (429). Try again later or use an API key.'));
+                    }
+                    return;
+                }
+
+                // Handle server errors (5xx) dengan retry
+                if (res.statusCode >= 500) {
+                    console.warn(`[httpsGet] Server error (${res.statusCode}). Retry ${CONFIG.RETRY.API_MAX - n + 1}...`);
+                    if (n > 1) {
+                        setTimeout(() => attempt(n - 1, delayMs), delayMs);
+                    } else {
+                        reject(new Error(`Server error ${res.statusCode}`));
+                    }
+                    return;
+                }
+
                 let data = '';
                 res.on('data', chunk => data += chunk);
                 res.on('end', () => {
-                    try { resolve(JSON.parse(data)); }
-                    catch (e) { reject(new Error(`JSON parse failed (${res.statusCode}): ${data.slice(0, 200)}`)); }
+                    if (res.statusCode >= 400) {
+                        reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+                        return;
+                    }
+                    try {
+                        const parsed = JSON.parse(data);
+                        resolve(parsed);
+                    }
+                    catch (e) {
+                        reject(new Error(`JSON parse failed (${res.statusCode}): ${data.slice(0, 200)}`));
+                    }
                 });
             });
             req.on('error', (err) => {
-                if (n > 1) { setTimeout(() => attempt(n - 1), 3000); }
+                console.error(`[httpsGet] Attempt ${CONFIG.RETRY.API_MAX - n + 1} failed for ${url}: ${err.message}`);
+                if (n > 1) { setTimeout(() => attempt(n - 1, delayMs * 2), delayMs); }
                 else { reject(err); }
             });
             req.on('timeout', () => {
                 req.destroy();
-                if (n > 1) { setTimeout(() => attempt(n - 1), 3000); }
+                console.error(`[httpsGet] Timeout on attempt ${CONFIG.RETRY.API_MAX - n + 1} for ${url}`);
+                if (n > 1) { setTimeout(() => attempt(n - 1, delayMs * 2), delayMs); }
                 else { reject(new Error('Request timeout')); }
             });
         };
@@ -172,11 +314,14 @@ function httpsGet(url, headers = {}, retries = 3) {
 }
 
 function loadExisting() {
-    if (hapusLama === 'y' && fs.existsSync(DATA_PATH)) { fs.unlinkSync(DATA_PATH); return []; }
+    if (hapusLama === 'y' && fs.existsSync(DATA_PATH)) {
+        fs.unlinkSync(DATA_PATH);
+        console.log(`[loadExisting] Deleted old data file: ${DATA_PATH}`);
+        return [];
+    }
     if (hapusLama === 'n' && fs.existsSync(DATA_PATH)) {
         try {
             const all = JSON.parse(fs.readFileSync(DATA_PATH, 'utf-8'));
-
 
             const SOURCE_MAP = {
                 'scholar': 'Google Scholar',
@@ -186,10 +331,13 @@ function loadExisting() {
             const currentSourceLabel = SOURCE_MAP[source] || source;
             const filtered = all.filter(e => e.source !== currentSourceLabel);
             if (filtered.length < all.length) {
-                console.log(` Removed ${all.length - filtered.length} old [${currentSourceLabel}] entries, keeping other sources.`);
+                console.log(`[loadExisting] Removed ${all.length - filtered.length} old [${currentSourceLabel}] entries, keeping other sources.`);
             }
             return filtered;
-        } catch { return []; }
+        } catch (err) {
+            console.error(`[loadExisting] Failed to parse ${DATA_PATH}: ${err.message}`);
+            return [];
+        }
     }
     return [];
 }
@@ -200,18 +348,12 @@ function save(data) {
 }
 
 async function extractAbstractFromPage(page) {
-    return page.evaluate(() => {
-        const selectors = [
-            '#abstract', '#articleAbstract', '#abs', '#abstractSection', '#abstractInFull',
-            '.abstract', '.article-abstract', '.paper-abstract', '.abstractSection',
-            '[itemprop="description"]', 'section.abstract', 'div.abstract',
-            'meta[name="description"]', 'meta[property="og:description"]'
-        ];
+    return page.evaluate((selectors, minLength) => {
         for (const s of selectors) {
             const el = document.querySelector(s);
             if (!el) continue;
             const text = el.tagName === 'META' ? el.getAttribute('content') : el.innerText;
-            if (text && text.trim().length > 100) return text.trim();
+            if (text && text.trim().length > minLength) return text.trim();
         }
         // Fallback paragraph — harus substansial agar tidak ambil teks acak
         const paras = [...document.querySelectorAll('p')]
@@ -219,7 +361,7 @@ async function extractAbstractFromPage(page) {
             .filter(t => t.length > 200 && t.length < 4000)
             .sort((a, b) => b.length - a.length);
         return paras[0] || null;
-    });
+    }, CONFIG.ABSTRACT_SELECTORS, 100);
 }
 
 async function scrapeScholar(hasilAkhir) {
@@ -243,12 +385,12 @@ async function scrapeScholar(hasilAkhir) {
     });
 
     const browser = await puppeteer.launch({
-        headless: 'new',
-        args: ['--no-sandbox', '--disable-dev-shm-usage', '--window-size=1280,720']
+        headless: CONFIG.BROWSER.HEADLESS,
+        args: CONFIG.BROWSER.ARGS
     });
 
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 720 });
+    await page.setViewport({ width: CONFIG.BROWSER.WINDOW_WIDTH, height: CONFIG.BROWSER.WINDOW_HEIGHT });
     let captchaActive = false;
     await page.setRequestInterception(true);
     page.on('request', req => {
@@ -260,55 +402,65 @@ async function scrapeScholar(hasilAkhir) {
 
     const baseUrl = `https://scholar.google.com/scholar?q=${encodeURIComponent(keyword)}&as_ylo=${yearFrom}&as_yhi=${yearTo}`;
 
-    console.log(` [Scholar] "${keyword}" (${yearFrom}${yearTo})  Target: ${TARGET}`);
+    console.log(`[Scholar] "${keyword}" (${yearFrom}-${yearTo}) Target: ${TARGET}`);
 
     try {
-        await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    } catch {
-        console.log('⟳ Scholar nav timeout, retrying...');
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.goto(baseUrl, { waitUntil: 'networkidle2', timeout: CONFIG.TIMEOUT.PAGE_LOAD });
+    } catch (err) {
+        console.log(`[Scholar] Initial nav timeout: ${err.message}, retrying...`);
+        try {
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.TIMEOUT.PAGE_LOAD });
+        } catch (err2) {
+            console.error(`[Scholar] Failed to load initial page: ${err2.message}`);
+            await browser.close();
+            process.exit(1);
+        }
     }
 
-
-    const CAPTCHA_TIMEOUT = 120_000;
     const captchaStart = Date.now();
     while (true) {
         const captcha = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha') || await page.$('#recaptcha');
         if (!captcha) break;
-        if (Date.now() - captchaStart > CAPTCHA_TIMEOUT) {
-            console.error(' CAPTCHA timeout');
-            await browser.close(); process.exit(1);
+        if (Date.now() - captchaStart > CONFIG.TIMEOUT.CAPTCHA) {
+            console.error('[Scholar] CAPTCHA timeout after 2 minutes');
+            await browser.close();
+            process.exit(1);
         }
         const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
         process.stdout.write(`CAPTCHA_URL:${b64}\n`);
-        await delay(2000);
+        await delay(CONFIG.TIMEOUT.STDIN_POLL);
     }
 
     let journalCount = 0;
     let startParam = 0;
-    const maxStart = Math.ceil(TARGET / 10) * 10 + 20;
+    const maxStart = Math.ceil(TARGET / CONFIG.PAGINATION.RESULTS_PER_PAGE) * CONFIG.PAGINATION.RESULTS_PER_PAGE + CONFIG.PAGINATION.MAX_PAGES_BUFFER;
     const reservedCandidates = []; // paywall slots: high quality tapi tidak ada abstract
 
     while (journalCount < TARGET && startParam < maxStart) {
         if (startParam > 0) {
             const pageUrl = `${baseUrl}&start=${startParam}`;
+            const pageNum = Math.floor(startParam / CONFIG.PAGINATION.RESULTS_PER_PAGE) + 1;
             try {
-                await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 25000 });
-            } catch {
-                console.log(`⟳ Page ${startParam / 10 + 1} timeout, retrying...`);
-                await delay(2500);
-                try { await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }); }
-                catch { console.log(`️ Skip page ${startParam / 10 + 1}`); startParam += 10; continue; }
+                await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: CONFIG.TIMEOUT.PAGE_LOAD });
+            } catch (err) {
+                console.log(`[Scholar] Page ${pageNum} timeout: ${err.message}, retrying...`);
+                await delay(CONFIG.DELAY.BETWEEN_PAGES);
+                try {
+                    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.TIMEOUT.PAGE_LOAD_RETRY });
+                } catch (err2) {
+                    console.error(`[Scholar] Failed to load page ${pageNum}: ${err2.message}, skipping...`);
+                    startParam += CONFIG.PAGINATION.RESULTS_PER_PAGE;
+                    continue;
+                }
             }
-
 
             const cap2 = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha');
             if (cap2) {
                 const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
                 process.stdout.write(`CAPTCHA_URL:${b64}\n`);
-                console.log('️ CAPTCHA on page, waiting...');
+                console.log(`[Scholar] CAPTCHA on page ${pageNum}, waiting...`);
                 for (let w = 0; w < 60; w++) {
-                    await delay(2000);
+                    await delay(CONFIG.TIMEOUT.STDIN_POLL);
                     const still = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha');
                     if (!still) break;
                     const b64b = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
@@ -382,17 +534,22 @@ async function scrapeScholar(hasilAkhir) {
             }
 
             if (item.isBook) {
-                // Books: only check title (no abstract available yet)
-                const bookTier = getKeywordTier(keyword, item.judul, '');
+                // Books: check title dengan relaxed matching
+                const bookTier = getKeywordTier(keyword, item.judul, item.snippet || '');
                 if (!bookTier) {
                     console.log(`⏭ Off-topic book skip: ${item.judul.slice(0, 50)}`);
                     continue;
                 }
-                item.abstrak_lengkap = 'Book/citation preview — no abstract available.';
+                const relevanceScore = getRelevanceScore(keyword, item.judul, item.snippet || '');
+                item.abstrak_lengkap = item.snippet || 'Book/citation preview — no abstract available.';
                 item.keyword = keyword;
+                item._kwTier = bookTier;
+                item._relevanceScore = relevanceScore;
+                item._isEnriched = false;
                 hasilAkhir.push(item);
                 journalCount++;
                 emitProgress(journalCount, TARGET);
+                console.log(`  📚 Book: "${item.judul.slice(0, 45)}" (${relevanceScore}% relevance)`);
                 continue;
             }
 
@@ -434,37 +591,52 @@ async function scrapeScholar(hasilAkhir) {
             } // end: buka detail page
 
             // ── Step 3: Decide ────────────────────────────────────────────────
-            // Tier check: keyword must appear as exact phrase in title or abstract
-            const scholarTier = getKeywordTier(keyword, item.judul, abstrak_lengkap || item.snippet || '');
+            // ALWAYS use Google Scholar snippet as base abstract (never empty!)
+            let finalAbstract = item.snippet || '';
+            let isEnriched = false;
+
+            // If we got better abstract from enrichment, use it
+            if (abstrak_lengkap && abstrak_lengkap.length >= ABSTRACT_MIN_LENGTH) {
+                finalAbstract = cleanAbstract(abstrak_lengkap) || abstrak_lengkap;
+                isEnriched = true;
+            }
+
+            // Check keyword relevance dengan abstract final (snippet atau enriched)
+            const scholarTier = getKeywordTier(keyword, item.judul, finalAbstract);
             if (!scholarTier) {
                 console.log(`⏭ Off-topic skip: ${item.judul.slice(0, 50)}`);
                 continue;
             }
 
-            if (abstrak_lengkap && abstrak_lengkap.length >= ABSTRACT_MIN_LENGTH) {
+            // Calculate relevance score untuk ranking
+            const relevanceScore = getRelevanceScore(keyword, item.judul, finalAbstract);
+
+            // Prepare final item
+            if (item.pdfLink) item.link = item.pdfLink;
+            item.abstrak_lengkap = finalAbstract;
+            item.keyword = keyword;
+            item._kwTier = scholarTier;
+            item._relevanceScore = relevanceScore;
+            item._isEnriched = isEnriched;
+
+            // Categorize: enriched abstract = main result, snippet only = reserved slot
+            if (isEnriched) {
                 // Abstract berkualitas ditemukan — masuk main results
-                if (item.pdfLink) item.link = item.pdfLink;
-                item.abstrak_lengkap = cleanAbstract(abstrak_lengkap) || abstrak_lengkap;
-                item.keyword = keyword;
-                item._kwTier = scholarTier;
                 hasilAkhir.push(item);
                 journalCount++;
                 emitProgress(journalCount, TARGET);
+                console.log(`  ✓ Enriched: "${item.judul.slice(0, 45)}" (${relevanceScore}% relevance)`);
             } else {
-                // Tidak ada abstract — simpan jika layak (citation atau tahun baru)
+                // Hanya punya snippet — simpan jika layak
                 const qualifiesReserved = (item.citationCount >= RESERVED_CITATION_MIN || parseInt(item.tahun) >= SKIP_CITATION_YEAR)
                     && reservedCandidates.length < MAX_RESERVED_SLOTS;
 
                 if (qualifiesReserved) {
-                    console.log(`  No-abstract slot: "${item.judul.slice(0, 45)}" (${item.citationCount} citations)`);
-                    if (item.pdfLink) item.link = item.pdfLink;
-                    item.abstrak_lengkap = 'Abstract not available — access restricted or not indexed.';
-                    item.keyword = keyword;
+                    console.log(`  ○ Snippet-only: "${item.judul.slice(0, 45)}" (${item.citationCount} citations, ${relevanceScore}% relevance)`);
                     item.isPaywalled = true;
-                    item._kwTier = scholarTier;
                     reservedCandidates.push(item);
                 } else {
-                    console.log(`⏭ No abstract, skip: ${item.judul.slice(0, 50)}`);
+                    console.log(`⏭ Low quality (snippet-only): ${item.judul.slice(0, 50)}`);
                 }
             }
 
@@ -478,14 +650,19 @@ async function scrapeScholar(hasilAkhir) {
     // ── Fill sisa slot dengan paywall candidates terbaik ───────────────────
     const remainingScholar = TARGET - journalCount;
     if (remainingScholar > 0 && reservedCandidates.length > 0) {
-        const sorted = reservedCandidates.sort((a, b) => b.citationCount - a.citationCount);
+        // Sort by: relevance score (60%) + citation count (40%)
+        const sorted = reservedCandidates.sort((a, b) => {
+            const scoreA = (a._relevanceScore || 0) * 0.6 + (a.citationCount || 0) * 0.4;
+            const scoreB = (b._relevanceScore || 0) * 0.6 + (b.citationCount || 0) * 0.4;
+            return scoreB - scoreA;
+        });
         const toAdd = sorted.slice(0, Math.min(remainingScholar, MAX_RESERVED_SLOTS));
         for (const item of toAdd) {
             hasilAkhir.push(item);
             journalCount++;
             emitProgress(journalCount, TARGET);
         }
-        console.log(` Added ${toAdd.length} paywall-reserved slot(s).`);
+        console.log(` Added ${toAdd.length} snippet-only slot(s) (sorted by relevance + citations).`);
     }
 
     await browser.close();
@@ -606,12 +783,16 @@ async function scrapeScopus(hasilAkhir) {
                 || entry['dc:publisher'] || null;
 
             // ── Decide ────────────────────────────────────────────────────────
-            // Tier check
+            // Tier check dengan relaxed matching
             const scopusTier = getKeywordTier(keyword, judul, abstrak_lengkap || '');
             if (!scopusTier) {
                 console.log(`⏭ Off-topic skip: ${judul.slice(0, 50)}`);
                 continue;
             }
+
+            // Calculate relevance score
+            const relevanceScore = getRelevanceScore(keyword, judul, abstrak_lengkap || '');
+            const citationTier = getCitationTier(citationCount, tahun);
 
             if (abstrak_lengkap && abstrak_lengkap.length >= ABSTRACT_MIN_LENGTH) {
                 hasilAkhir.push({
@@ -619,27 +800,34 @@ async function scrapeScopus(hasilAkhir) {
                     abstrak_lengkap, link, source: 'Scopus',
                     journal: journalName, keyword, citationCount,
                     isOpenAccess: entry['openaccess'] === '1' || entry['openaccessFlag'] === true,
-                    _kwTier: scopusTier
+                    _kwTier: scopusTier,
+                    _relevanceScore: relevanceScore,
+                    _citationTier: citationTier,
+                    _isEnriched: true
                 });
                 count++;
                 emitProgress(count, TARGET);
+                console.log(`  ✓ Scopus: "${judul.slice(0, 45)}" (${relevanceScore}% relevance, ${citationTier} citations)`);
             } else {
-                const qualifiesReserved = doi
-                    && (citationCount >= RESERVED_CITATION_MIN || parseInt(tahun) >= SKIP_CITATION_YEAR)
+                // Untuk Scopus, selalu simpan karena data sudah berkualitas
+                const qualifiesReserved = (citationCount >= 1 || parseInt(tahun) >= 2023)
                     && reservedCandidatesScopus.length < MAX_RESERVED_SLOTS;
 
                 if (qualifiesReserved) {
-                    console.log(`  Paywall slot reserved: "${judul.slice(0, 45)}" (${citationCount} citations)`);
+                    console.log(`  ○ Scopus (no abstract): "${judul.slice(0, 45)}" (${citationCount} citations)`);
                     reservedCandidatesScopus.push({
                         isBook: false, judul, author_info, tahun,
                         abstrak_lengkap: 'Abstract not available — access restricted (paywall).',
                         link, source: 'Scopus', journal: journalName,
                         keyword, citationCount, isPaywalled: true,
                         isOpenAccess: entry['openaccess'] === '1' || entry['openaccessFlag'] === true,
-                        _kwTier: scopusTier
+                        _kwTier: scopusTier,
+                        _relevanceScore: relevanceScore,
+                        _citationTier: citationTier,
+                        _isEnriched: false
                     });
                 } else {
-                    console.log(`⏭ No abstract, skip: ${judul.slice(0, 50)}`);
+                    console.log(`⏭ Scopus low quality: ${judul.slice(0, 50)}`);
                 }
             }
         }
@@ -676,24 +864,51 @@ async function scrapeSemantic(hasilAkhir) {
     let count = 0, offset = 0;
     const reservedCandidatesSemantic = [];
 
-    console.log(` [Semantic Scholar] "${keyword}" (${yearFrom}-${yearTo})  Target: ${TARGET}`);
+    const semanticYearTo = Math.min(yearTo, currentYear);
+    console.log(` [Semantic Scholar] "${keyword}" (${yearFrom}-${semanticYearTo})  Target: ${TARGET}`);
+
+    let useDateFilter = true;
 
     while (count < TARGET) {
-        const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(keyword)}&limit=${batch}&offset=${offset}&fields=${fields}&year=${yearFrom}-${yearTo}`;
+        const dateFilter = useDateFilter && yearFrom && semanticYearTo
+            ? `&publicationDateOrYear=${yearFrom}:${semanticYearTo}`
+            : '';
+        const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(keyword)}&fields=${fields}&limit=${batch}&offset=${offset}${dateFilter}`;
+
+        console.log(` [Semantic] Requesting: ${url.substring(0, 100)}...`);
 
         let data;
         try {
-            data = await httpsGet(url, { 'x-api-key': apiKey || '' });
+            const headers = {};
+            if (apiKey) headers['x-api-key'] = apiKey;
+            data = await httpsGet(url, headers);
         } catch (err) {
             console.error(' [Semantic] Request error:', err.message);
             break;
         }
 
-        const papers = data?.data || [];
-        const total = data?.total || 0;
+        // Debug: log response structure
+        if (!data || typeof data !== 'object') {
+            console.error(' [Semantic] Invalid response:', data);
+            break;
+        }
+
+        const papers = data.data || [];
+        const total = data.total || 0;
+
+        console.log(` [Semantic] Got ${papers.length} papers (total available: ${total})`);
 
         if (!papers.length) {
-            console.log(' [Semantic] No results.');
+            if (total === 0 && useDateFilter && offset === 0) {
+                console.log(` [Semantic] No results with date filter (${yearFrom}-${semanticYearTo}). Retrying without date filter...`);
+                useDateFilter = false;
+                offset = 0;
+                continue;
+            } else if (total === 0) {
+                console.log(' [Semantic] No results found for this query.');
+            } else {
+                console.log(` [Semantic] No more results at offset ${offset}.`);
+            }
             break;
         }
 
@@ -753,6 +968,10 @@ async function scrapeSemantic(hasilAkhir) {
                 continue;
             }
 
+            // Calculate relevance score
+            const relevanceScore = getRelevanceScore(keyword, paper.title, abstract || '');
+            const citationTier = getCitationTier(citationCount, tahun);
+
             if (abstract && abstract.length >= ABSTRACT_MIN_LENGTH) {
                 hasilAkhir.push({
                     isBook: false,
@@ -766,17 +985,20 @@ async function scrapeSemantic(hasilAkhir) {
                     journal: paper.journal?.name || paper.publicationVenue?.name || null,
                     citationCount,
                     isOpenAccess: paper.isOpenAccess || !!paper.openAccessPdf?.url,
-                    _kwTier: semanticTier
+                    _kwTier: semanticTier,
+                    _relevanceScore: relevanceScore,
+                    _citationTier: citationTier,
+                    _isEnriched: true
                 });
                 count++;
                 emitProgress(count, TARGET);
+                console.log(`  ✓ Semantic: "${paper.title.slice(0, 45)}" (${relevanceScore}% relevance)`);
             } else {
-                const qualifiesReserved = doi
-                    && (citationCount >= RESERVED_CITATION_MIN || parseInt(tahun) >= SKIP_CITATION_YEAR)
+                const qualifiesReserved = (citationCount >= 1 || parseInt(tahun) >= 2023)
                     && reservedCandidatesSemantic.length < MAX_RESERVED_SLOTS;
 
                 if (qualifiesReserved) {
-                    console.log(` Paywall slot reserved: "${paper.title.slice(0, 45)}" (${citationCount} citations)`);
+                    console.log(`  ○ Semantic (no abstract): "${paper.title.slice(0, 45)}" (${citationCount} citations)`);
                     reservedCandidatesSemantic.push({
                         isBook: false, judul: paper.title, author_info: authors, tahun,
                         abstrak_lengkap: 'Abstract not available — access restricted (paywall).',
@@ -784,10 +1006,13 @@ async function scrapeSemantic(hasilAkhir) {
                         keyword, journal: paper.journal?.name || paper.publicationVenue?.name || null,
                         citationCount, isPaywalled: true,
                         isOpenAccess: paper.isOpenAccess || !!paper.openAccessPdf?.url,
-                        _kwTier: semanticTier
+                        _kwTier: semanticTier,
+                        _relevanceScore: relevanceScore,
+                        _citationTier: citationTier,
+                        _isEnriched: false
                     });
                 } else {
-                    console.log(` No abstract, skip: ${paper.title.slice(0, 50)}`);
+                    console.log(` Semantic low quality: ${paper.title.slice(0, 50)}`);
                 }
             }
 
