@@ -1,0 +1,42 @@
+{
+  "name": "client",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@types/react": "^18.2.26",
+    "@types/react-dom": "^18.2.14",
+    "autoprefixer": "^10.4.13",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.21.1",
+    "tailwindcss": "^3.4.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/node": "^20.11.13",
+    "css-loader": "^7.1.4",
+    "html-webpack-plugin": "^5.5.3",
+    "postcss": "^8.5.8",
+    "postcss-loader": "^8.2.1",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.5.4",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.13.3"
+  },
+  "scripts": {
+    "start": "webpack-dev-server --mode development",
+    "build": "webpack --mode production",
+    "serve": "webpack-dev-server --mode development",
+    "lint": "eslint . --ext .tsx --ignore-pattern node_modules/"
+  },
+  "resolve": {
+    "extensions": [
+      ".tsx",
+      ".ts",
+      ".js"
+    ]
+  },
+  "esModule": false
+}

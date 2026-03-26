@@ -1,6 +1,11 @@
+# Secrets
+.env
+
 # Node.js
 node_modules/
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Python
 __pycache__/
@@ -11,9 +16,16 @@ env/
 .pytest_cache/
 
 # Data & Outputs
-data/jurnal_bersih.json
-data/jurnal_mentah.json
-data/jurnal_siap_skripsi.xlsx
+data/
+backups/
+scraper_output.log
+*.log
+
+# Web Build & Junk
+web/dist/
+web/legacy_html_backup/
+web/tailwindcss.exe
+scraper/debug_search_*.html
 
 # IDE & OS
 .vscode/

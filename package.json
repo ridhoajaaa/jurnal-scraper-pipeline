@@ -1,0 +1,29 @@
+{
+  "name": "litassist-server",
+  "version": "2.0.0",
+  "description": "LitAssist — Academic Literature Assistant (Production)",
+  "main": "server.js",
+  "scripts": {
+    "start":   "node server.js",
+    "dev":     "nodemon server.js",
+    "prod":    "NODE_ENV=production node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "bcryptjs":              "^2.4.3",
+    "connect-mongo":         "^5.1.0",
+    "express":               "^5.0.0",
+    "express-rate-limit":    "^7.5.0",
+    "express-session":       "^1.18.1",
+    "helmet":                "^8.0.0",
+    "mongoose":              "^8.9.4",
+    "puppeteer-extra":       "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "socket.io":             "^4.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}

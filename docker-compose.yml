@@ -1,0 +1,54 @@
+services:
+
+  mongodb:
+    image: docker.io/library/mongo:6
+    container_name: literature_mongodb
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+      - ./backups:/backups
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: literature_assistant
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: literature_web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongodb
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/literature_assistant
+      SESSION_SECRET: ${SESSION_SECRET:-change-this-in-production}
+      NODE_ENV: production
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      APP_URL: ${APP_URL}
+    volumes:
+      - ./data:/app/data
+      - ./web:/app/web
+      - ./scraper:/app/scraper
+      - ./processor:/app/processor
+      - /app/web/node_modules
+      - /app/scraper/node_modules
+
+  ngrok:
+    image: docker.io/ngrok/ngrok:latest
+    container_name: literature_ngrok
+    restart: unless-stopped
+    command: >
+      http web:3000 --domain=idiochromatic-materially-ace.ngrok-free.dev --log=stdout --log-format=json --request-header-add="ngrok-skip-browser-warning:true"
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"
+    depends_on:
+      - web
+
+volumes:
+  mongo_data:

@@ -1,0 +1,7 @@
+User-agent: *
+Disallow: /admin.html
+Disallow: /api/
+Disallow: /profile.html
+Disallow: /stats.html
+Disallow: /summary.html
+Disallow: /library.html
