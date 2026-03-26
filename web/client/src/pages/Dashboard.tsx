@@ -112,19 +112,19 @@ export function Dashboard() {
   }, []);
 
 
-  const uniqueYears = Array.from(new Set(journals.map(j => j.tahun))).filter(Boolean).sort((a,b) => Number(b)-Number(a));
-  const uniqueSources = Array.from(new Set(journals.map(j => j.source))).filter(Boolean);
-
-  let filteredJournals = journals.filter(j => 
+  const uniqueYears = Array.from(new Set(journals.map((j: any) => j.tahun))).filter(Boolean).sort((a,b) => Number(b)-Number(a));
+  const uniqueSources = Array.from(new Set(journals.map((j: any) => j.source))).filter(Boolean);
+  
+  let filteredJournals = journals.filter((j: any) => 
     (j.judul?.toLowerCase() || "").includes(searchQuery.toLowerCase()) || 
     (j.author_info?.toLowerCase() || "").includes(searchQuery.toLowerCase())
   );
-  if (filterYear !== "ALL") filteredJournals = filteredJournals.filter(j => j.tahun === filterYear);
-  if (filterSource !== "ALL") filteredJournals = filteredJournals.filter(j => j.source === filterSource);
+  if (filterYear !== "ALL") filteredJournals = filteredJournals.filter((j: any) => j.tahun === filterYear);
+  if (filterSource !== "ALL") filteredJournals = filteredJournals.filter((j: any) => j.source === filterSource);
 
   const isAllSelected = filteredJournals.length > 0 && selectedIds.length === filteredJournals.length;
 
-  const toggleSelectAll = () => isAllSelected ? setSelectedIds([]) : setSelectedIds(filteredJournals.map(j => j._id));
+  const toggleSelectAll = () => isAllSelected ? setSelectedIds([]) : setSelectedIds(filteredJournals.map((j: any) => j._id));
   const toggleSelect = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
@@ -191,7 +191,7 @@ export function Dashboard() {
       clearData: clearExisting,
       apiKey: selectedSource === "SCOPUS" ? apiKey : undefined
     }, {
-      onSuccess: (data) => {
+      onSuccess: (data: any) => {
         if (data.jobId) {
           setCurrentJobId(data.jobId);
           setIsScraping(true);
@@ -255,11 +255,11 @@ export function Dashboard() {
             <div className="flex gap-2">
               <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="h-8 px-3 bg-slate-100/80 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-[11px] font-bold rounded-lg outline-none cursor-pointer transition-all">
                 <option value="ALL">All Years</option>
-                {uniqueYears.map(yr => <option key={yr} value={yr}>{yr}</option>)}
+                {uniqueYears.map((yr: any) => <option key={yr} value={yr}>{yr}</option>)}
               </select>
               <select value={filterSource} onChange={(e) => setFilterSource(e.target.value)} className="h-8 px-3 bg-slate-100/80 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-[11px] font-bold rounded-lg outline-none cursor-pointer transition-all">
                 <option value="ALL">All Sources</option>
-                {uniqueSources.map(src => <option key={src} value={src}>{src}</option>)}
+                {uniqueSources.map((src: any) => <option key={src} value={src}>{src}</option>)}
               </select>
             </div>
             <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 bg-slate-100/50 dark:bg-slate-800/30 px-2 py-1 rounded-md whitespace-nowrap border border-slate-200/50 dark:border-slate-700/30">{filteredJournals.length} results</span>
@@ -308,10 +308,13 @@ export function Dashboard() {
             </div>
           )}
 
-          {filteredJournals.map((journal, index) => {
+          {filteredJournals.map((journal: any, index: number) => {
             const isSelected = selectedIds.includes(journal._id);
             const isExpanded = expandedId === journal._id;
-            const isSaved = localSavedIds.includes(journal._id);
+            
+            // Priority: Optimistic local state OR Backend-provided flag
+            // @ts-ignore - isSaved is added dynamically by the backend lean query
+            const isSaved = localSavedIds.includes(journal._id) || journal.isSaved;
 
             return (
               <motion.div
@@ -397,7 +400,7 @@ export function Dashboard() {
                         {/* Category tags */}
                         {journal.Kategori && (
                           <div className="flex flex-wrap gap-1.5">
-                            {journal.Kategori.split('|').map((cat, i) => (
+                            {journal.Kategori.split('|').map((cat: string, i: number) => (
                               <span key={i} className="text-[10px] font-semibold bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 px-2 py-0.5 rounded-md text-slate-500">{cat.trim()}</span>
                             ))}
                           </div>

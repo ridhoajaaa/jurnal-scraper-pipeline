@@ -670,7 +670,19 @@ app.get('/api/data', requireAuth, async (req, res) => {
             .find({ userId: req.session.userId })
             .sort({ Relevansi: -1, createdAt: -1 })
             .lean();
-        res.json(journals);
+
+        // Robust backend-side 'isSaved' check
+        const savedItems = await SavedJournal.find({ userId: req.session.userId }, 'judul link').lean();
+        const savedTitles = new Set(savedItems.map(s => s.judul?.trim().toLowerCase()));
+        const savedLinks = new Set(savedItems.map(s => s.link?.trim()));
+
+        const journalsWithStatus = journals.map(j => ({
+            ...j,
+            isSaved: (j.judul && savedTitles.has(j.judul.trim().toLowerCase())) || 
+                     (j.link && savedLinks.has(j.link.trim()))
+        }));
+
+        res.json(journalsWithStatus);
     } catch (err) {
         logger.error('Data fetch error', { error: err.message });
         res.status(500).json({ error: 'Failed to fetch data.' });
