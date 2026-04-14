@@ -20,13 +20,14 @@ module.exports = {
         SKIP_CITATION_YEAR: 2024,   // Tahun ini ke atas bebas dari citation filter
         RESERVED_CITATION_MIN: 3,   // Minimal sitasi untuk reserved slot
         MAX_RESERVED_SLOTS: 15,     // Maksimal jurnal tanpa abstract per scrape
-        ABSTRACT_MIN_LENGTH: 150    // Minimal karakter abstract yang diterima
+        ABSTRACT_MIN_LENGTH: 150,   // Minimal karakter abstract yang diterima
+        ABSTRACT_MAX_LENGTH: 5000   // Maksimal karakter abstract (cegah full-page dump)
     },
 
     // Delays (anti-rate limit)
     DELAY: {
         BETWEEN_PAGES: 2500,        // 2.5 detik antar halaman Scholar
-        RETRY_BACKOFF: 5000,        // 5 detik sebelum retry (naik dari 3s)
+        RETRY_BACKOFF: 2000,        // 2 detik sebelum retry
         BETWEEN_REQUESTS: 100,      // 100ms antar request ke API
         SCROLL: 300                 // 300ms antar scroll action
     },
@@ -39,8 +40,8 @@ module.exports = {
 
     // Retry settings
     RETRY: {
-        API_MAX: 6,                 // Maksimal retry untuk API calls
-        NAVIGATION_MAX: 2           // Maksimal retry untuk navigation
+        API_MAX: 3,                 // Kurangi dari 6 → 3
+        NAVIGATION_MAX: 2          // Maksimal retry untuk navigation
     },
 
     // User Agent & Headers
@@ -50,6 +51,7 @@ module.exports = {
     },
 
     // Abstract extraction selectors (fallback order)
+    // IMPORTANT: More specific selectors first, generic ones last
     ABSTRACT_SELECTORS: [
         '#abstract',
         '#articleAbstract',
@@ -57,10 +59,13 @@ module.exports = {
         '#abstractSection',
         '#abstractInFull',
         '.abstract',
+        '.art-abstract',           // MDPI journals
+        '.abstract-content',       // MDPI / Frontiers
         '.article-abstract',
         '.paper-abstract',
         '.abstractSection',
-        '[itemprop="description"]',
+        '.hlFld-Abstract',         // Wiley
+        '.abstract-text',          // Taylor & Francis
         'section.abstract',
         'div.abstract',
         'meta[name="description"]',
@@ -83,12 +88,15 @@ module.exports = {
 
     // Browser launch args
     BROWSER: {
-        HEADLESS: 'new',
+        // When DISPLAY is set (Xvfb/Docker), use non-headless so noVNC can show browser for CAPTCHA solving.
+        // When no DISPLAY (local/CI), use headless mode.
+        HEADLESS: process.env.DISPLAY ? false : 'new',
         WINDOW_WIDTH: 1280,
         WINDOW_HEIGHT: 720,
         ARGS: [
             '--no-sandbox',
             '--disable-dev-shm-usage',
+            '--disable-gpu',
             '--window-size=1280,720'
         ]
     },

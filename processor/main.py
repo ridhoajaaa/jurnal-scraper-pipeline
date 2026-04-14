@@ -216,31 +216,57 @@ def detect_duplicates(df, threshold=0.72):
     duplicate_flags = [''] * n   
     duplicate_of    = [''] * n   
 
+    titles_list = df['judul'].fillna('').astype(str).tolist()
+    abstracts_list = df.get('abstrak_lengkap', pd.Series(['']*n)).fillna('').astype(str).tolist()
+    keywords_list = df.get('keyword', pd.Series(['']*n)).fillna('').astype(str).tolist()
     
-    title_tokens = [tokenize(str(df.iloc[i]['judul'])) for i in range(n)]
-    abstract_tokens = [tokenize(str(df.iloc[i].get('abstrak_lengkap', ''))) for i in range(n)]
+    title_tokens = [tokenize(t) for t in titles_list]
+    abstract_tokens = [tokenize(a) for a in abstracts_list]
+
+    title_lens = [len(t) for t in title_tokens]
+    abstract_lens = [len(a) for a in abstract_tokens]
 
     for i in range(n):
         if duplicate_flags[i]:  
             continue
-        kw_i = str(df.iloc[i].get('keyword', ''))
+            
+        kw_i = keywords_list[i]
+        ti = title_tokens[i]
+        ai = abstract_tokens[i]
+        ti_len = title_lens[i]
+        ai_len = abstract_lens[i]
 
         for j in range(i + 1, n):
             if duplicate_flags[j]:
                 continue
-
-            kw_j = str(df.iloc[j].get('keyword', ''))
-
             
-            
-            title_sim    = jaccard_similarity(title_tokens[i], title_tokens[j])
-            abstract_sim = jaccard_similarity(abstract_tokens[i], abstract_tokens[j])
+            kw_j = keywords_list[j]
+
+            # Fast Jaccard for Title
+            tj_len = title_lens[j]
+            if ti_len == 0 or tj_len == 0:
+                title_sim = 0.0
+            else:
+                t_intersect = len(ti.intersection(title_tokens[j]))
+                title_sim = t_intersect / (ti_len + tj_len - t_intersect)
+
+            # Early escape condition: max abstract similarity is 1.0 (weight 0.3)
+            if title_sim * 0.7 + 0.3 < threshold:
+                continue
+
+            # Fast Jaccard for Abstract
+            aj_len = abstract_lens[j]
+            if ai_len == 0 or aj_len == 0:
+                abstract_sim = 0.0
+            else:
+                a_intersect = len(ai.intersection(abstract_tokens[j]))
+                abstract_sim = a_intersect / (ai_len + aj_len - a_intersect)
 
             combined = title_sim * 0.7 + abstract_sim * 0.3
 
             if combined >= threshold:
                 duplicate_flags[j] = f'️ Similar ({int(combined*100)}%)'
-                duplicate_of[j]    = str(df.iloc[i]['judul'])[:80]
+                duplicate_of[j]    = str(titles_list[i])[:80]
 
     df['isDuplicateSuspect'] = duplicate_flags
     df['duplicateOf']        = duplicate_of
@@ -322,8 +348,7 @@ def fetch_openalex_fwci(doi):
             'Accept': 'application/json'
         })
         with urllib.request.urlopen(req, timeout=8) as resp:
-            import json as _json
-            data = _json.loads(resp.read().decode('utf-8'))
+            data = json.loads(resp.read().decode('utf-8'))
             fwci = data.get('fwci')
             if fwci is not None:
                 return float(fwci)
@@ -348,8 +373,7 @@ def lookup_doi_by_title(title):
             'Accept': 'application/json'
         })
         with urllib.request.urlopen(req, timeout=8) as resp:
-            import json as _json
-            data = _json.loads(resp.read().decode('utf-8'))
+            data = json.loads(resp.read().decode('utf-8'))
             items = data.get('message', {}).get('items', [])
             if not items:
                 return None
@@ -544,9 +568,9 @@ def compute_quality_score(df, search_keyword):
     """
     Final score = weighted average of 4 components.
     Weights:
-        Keyword relevance  35%
-        Citation score     35%
-        Abstract quality   20%
+        Keyword relevance  50%
+        Citation score     25%
+        Abstract quality   15%
         Access bonus       10%
     """
     w_kw  = 0.50  # keyword relevance — most important, user search intent
@@ -599,6 +623,30 @@ def proses_data():
 
     with open(input_f, 'r', encoding='utf-8') as f:
         data = json.load(f)
+
+    # Merge Scrapling supplementary data if available
+    scrapling_f = f'../data/scrapling_raw_{job_id}.json'
+    if os.path.exists(scrapling_f):
+        try:
+            with open(scrapling_f, 'r', encoding='utf-8') as f:
+                scrapling_data = json.load(f)
+            if scrapling_data:
+                data = data + scrapling_data
+                print(f" Merged {len(scrapling_data)} entries from Scrapling source.")
+        except Exception as e:
+            print(f" Warning: Failed to merge Scrapling data: {e}")
+    
+    # Merge OpenAlex data if available
+    openalex_f = f'../data/openalex_raw_{job_id}.json'
+    if os.path.exists(openalex_f):
+        try:
+            with open(openalex_f, 'r', encoding='utf-8') as f:
+                openalex_data = json.load(f)
+            if openalex_data:
+                data = data + openalex_data
+                print(f" Merged {len(openalex_data)} entries from OpenAlex source.")
+        except Exception as e:
+            print(f" Warning: Failed to merge OpenAlex data: {e}")
 
     if not data:
         print("Info: Data is empty")

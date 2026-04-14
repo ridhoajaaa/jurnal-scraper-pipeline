@@ -1,2 +1,4 @@
 pandas>=2.0.0
 xlsxwriter>=3.0.0
+pymongo>=4.0.0
+scrapling>=0.2.0

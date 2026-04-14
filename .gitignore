@@ -1,5 +1,6 @@
 # Secrets
 .env
+.agent
 
 # Node.js
 node_modules/

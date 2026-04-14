@@ -247,6 +247,7 @@ function getRelevanceScore(keyword, title, abstract) {
 function httpsGet(url, headers = {}, retries = CONFIG.RETRY.API_MAX) {
     return new Promise((resolve, reject) => {
         const attempt = (n, delayMs = CONFIG.DELAY.RETRY_BACKOFF) => {
+            let isHandled = false;
             const options = {
                 headers: { 'User-Agent': CONFIG.HEADERS.USER_AGENT, ...headers },
                 timeout: CONFIG.TIMEOUT.API_CALL
@@ -254,11 +255,13 @@ function httpsGet(url, headers = {}, retries = CONFIG.RETRY.API_MAX) {
             const req = https.get(url, options, (res) => {
                 // Handle redirect
                 if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    if (isHandled) return; isHandled = true;
                     return httpsGet(res.headers.location, headers, retries).then(resolve).catch(reject);
                 }
 
                 // Handle rate limit (429) dengan exponential backoff
                 if (res.statusCode === 429) {
+                    if (isHandled) return; isHandled = true;
                     const retryAfter = parseInt(res.headers['retry-after']) || 0;
                     const waitMs = retryAfter * 1000 || delayMs;
                     console.warn(`[httpsGet] Rate limited (429). Waiting ${waitMs}ms before retry ${CONFIG.RETRY.API_MAX - n + 1}...`);
@@ -272,6 +275,7 @@ function httpsGet(url, headers = {}, retries = CONFIG.RETRY.API_MAX) {
 
                 // Handle server errors (5xx) dengan retry
                 if (res.statusCode >= 500) {
+                    if (isHandled) return; isHandled = true;
                     console.warn(`[httpsGet] Server error (${res.statusCode}). Retry ${CONFIG.RETRY.API_MAX - n + 1}...`);
                     if (n > 1) {
                         setTimeout(() => attempt(n - 1, delayMs), delayMs);
@@ -284,6 +288,7 @@ function httpsGet(url, headers = {}, retries = CONFIG.RETRY.API_MAX) {
                 let data = '';
                 res.on('data', chunk => data += chunk);
                 res.on('end', () => {
+                    if (isHandled) return; isHandled = true;
                     if (res.statusCode >= 400) {
                         reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
                         return;
@@ -298,11 +303,13 @@ function httpsGet(url, headers = {}, retries = CONFIG.RETRY.API_MAX) {
                 });
             });
             req.on('error', (err) => {
+                if (isHandled) return; isHandled = true;
                 console.error(`[httpsGet] Attempt ${CONFIG.RETRY.API_MAX - n + 1} failed for ${url}: ${err.message}`);
                 if (n > 1) { setTimeout(() => attempt(n - 1, delayMs * 2), delayMs); }
                 else { reject(err); }
             });
             req.on('timeout', () => {
+                if (isHandled) return; isHandled = true;
                 req.destroy();
                 console.error(`[httpsGet] Timeout on attempt ${CONFIG.RETRY.API_MAX - n + 1} for ${url}`);
                 if (n > 1) { setTimeout(() => attempt(n - 1, delayMs * 2), delayMs); }
@@ -348,20 +355,53 @@ function save(data) {
 }
 
 async function extractAbstractFromPage(page) {
-    return page.evaluate((selectors, minLength) => {
+    const maxLen = CONFIG.QUALITY.ABSTRACT_MAX_LENGTH || 5000;
+    return page.evaluate((selectors, minLength, maxLength) => {
+        // Noise patterns — skip elements containing these (navigation, metadata, etc.)
+        const NOISE = ['order article', 'reprints', 'open accessarticle', 'download keyboard',
+                        'browse figures', 'review reports', 'submit to', 'copyright ©',
+                        'share and cite', 'article metrics'];
+
+        function isNoise(text) {
+            const lower = text.toLowerCase().substring(0, 300);
+            return NOISE.some(n => lower.includes(n));
+        }
+
+        function clamp(text) {
+            return text.trim().substring(0, maxLength);
+        }
+
+        // Step 1: Try dedicated abstract selectors
         for (const s of selectors) {
             const el = document.querySelector(s);
             if (!el) continue;
             const text = el.tagName === 'META' ? el.getAttribute('content') : el.innerText;
-            if (text && text.trim().length > minLength) return text.trim();
+            if (!text) continue;
+            const trimmed = text.trim();
+            if (trimmed.length > minLength && trimmed.length < maxLength && !isNoise(trimmed)) {
+                return trimmed;
+            }
         }
-        // Fallback paragraph — harus substansial agar tidak ambil teks acak
-        const paras = [...document.querySelectorAll('p')]
+
+        // Step 2: Fallback — find the best paragraph that looks like an abstract
+        const paras = [...document.querySelectorAll('p, div.abstract, section.abstract')]
             .map(p => p.innerText?.trim() || '')
-            .filter(t => t.length > 200 && t.length < 4000)
-            .sort((a, b) => b.length - a.length);
-        return paras[0] || null;
-    }, CONFIG.ABSTRACT_SELECTORS, 100);
+            .filter(t => t.length > 200 && t.length < 4000 && !isNoise(t));
+
+        // Prefer paragraphs with academic signal words
+        const signals = ['this study', 'this paper', 'abstract', 'we propose', 'results',
+                         'findings', 'method', 'objective', 'purpose', 'conclusion'];
+        const academic = paras.filter(t => {
+            const lower = t.toLowerCase();
+            return signals.some(s => lower.includes(s));
+        });
+
+        if (academic.length > 0) return clamp(academic[0]);
+        if (paras.length > 0) return clamp(paras[0]);
+
+        // NO body.innerText fallback — it grabs entire page content and is never useful
+        return null;
+    }, CONFIG.ABSTRACT_SELECTORS, 100, maxLen);
 }
 
 async function scrapeScholar(hasilAkhir) {
@@ -419,15 +459,25 @@ async function scrapeScholar(hasilAkhir) {
 
     const captchaStart = Date.now();
     while (true) {
-        const captcha = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha') || await page.$('#recaptcha');
-        if (!captcha) break;
+        try {
+            const captcha = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha') || await page.$('#recaptcha');
+            if (!captcha) { captchaActive = false; break; }
+        } catch {
+            // Execution context destroyed = page navigated after CAPTCHA solved
+            console.log('[Scholar] CAPTCHA resolved (page navigated)');
+            captchaActive = false;
+            break;
+        }
+        captchaActive = true;
         if (Date.now() - captchaStart > CONFIG.TIMEOUT.CAPTCHA) {
             console.error('[Scholar] CAPTCHA timeout after 2 minutes');
             await browser.close();
             process.exit(1);
         }
-        const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
-        process.stdout.write(`CAPTCHA_URL:${b64}\n`);
+        try {
+            const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
+            process.stdout.write(`CAPTCHA_URL:${b64}\n`);
+        } catch { /* page navigating, ignore */ }
         await delay(CONFIG.TIMEOUT.STDIN_POLL);
     }
 
@@ -454,18 +504,31 @@ async function scrapeScholar(hasilAkhir) {
                 }
             }
 
+            // Human-like delay between pages
+            await delay(CONFIG.DELAY.BETWEEN_PAGES + Math.random() * 1000);
+
             const cap2 = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha');
             if (cap2) {
-                const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
-                process.stdout.write(`CAPTCHA_URL:${b64}\n`);
+                captchaActive = true;
+                try {
+                    const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
+                    process.stdout.write(`CAPTCHA_URL:${b64}\n`);
+                } catch { /* ignore if page navigating */ }
                 console.log(`[Scholar] CAPTCHA on page ${pageNum}, waiting...`);
                 for (let w = 0; w < 60; w++) {
                     await delay(CONFIG.TIMEOUT.STDIN_POLL);
-                    const still = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha');
-                    if (!still) break;
-                    const b64b = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
-                    process.stdout.write(`CAPTCHA_URL:${b64b}\n`);
+                    try {
+                        const still = await page.$('#gs_captcha_ccl') || await page.$('.g-recaptcha');
+                        if (!still) break;
+                        const b64b = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
+                        process.stdout.write(`CAPTCHA_URL:${b64b}\n`);
+                    } catch {
+                        // Execution context destroyed = CAPTCHA solved, page navigated
+                        console.log(`[Scholar] CAPTCHA resolved on page ${pageNum}`);
+                        break;
+                    }
                 }
+                captchaActive = false;
             }
         }
 
@@ -567,27 +630,29 @@ async function scrapeScholar(hasilAkhir) {
             // ── Step 2: Buka detail page hanya jika API gagal ────────────────
             if (!abstrak_lengkap || abstrak_lengkap.length < ABSTRACT_MIN_LENGTH) {
                 const detailPage = await browser.newPage();
-                await detailPage.setRequestInterception(true);
-                detailPage.on('request', req => {
-                    if (['image', 'media', 'font'].includes(req.resourceType())) req.abort();
-                    else req.continue();
-                });
+                try {
+                    await detailPage.setRequestInterception(true);
+                    detailPage.on('request', req => {
+                        if (['image', 'media', 'font'].includes(req.resourceType())) req.abort();
+                        else req.continue();
+                    });
 
-                for (let attempt = 1; attempt <= 2; attempt++) {
-                    try {
-                        await detailPage.goto(item.link, {
-                            waitUntil: 'domcontentloaded',
-                            timeout: attempt === 1 ? 12000 : 8000
-                        });
-                        abstrak_lengkap = await extractAbstractFromPage(detailPage);
-                        if (abstrak_lengkap && abstrak_lengkap.length > 80) break;
-                    } catch {
-                        if (attempt === 2) console.log(`️ Fetch fail: ${item.judul.slice(0, 40)}`);
-                        await delay(800);
+                    for (let attempt = 1; attempt <= 2; attempt++) {
+                        try {
+                            await detailPage.goto(item.link, {
+                                waitUntil: 'domcontentloaded',
+                                timeout: attempt === 1 ? 12000 : 8000
+                            });
+                            abstrak_lengkap = await extractAbstractFromPage(detailPage);
+                            if (abstrak_lengkap && abstrak_lengkap.length > 80) break;
+                        } catch {
+                            if (attempt === 2) console.log(`️ Fetch fail: ${item.judul.slice(0, 40)}`);
+                            await delay(800);
+                        }
                     }
+                } finally {
+                    await detailPage.close().catch(() => {});
                 }
-
-                await detailPage.close();
             } // end: buka detail page
 
             // ── Step 3: Decide ────────────────────────────────────────────────
@@ -640,8 +705,8 @@ async function scrapeScholar(hasilAkhir) {
                 }
             }
 
-            // Jitter delay — tetap terlihat manusiawi
-            await delay(300 + Math.random() * 300);
+            // Jitter delay — human-like pacing to reduce CAPTCHA risk
+            await delay(1500 + Math.random() * 2000);
         }
 
         startParam += 10;
@@ -834,7 +899,7 @@ async function scrapeScopus(hasilAkhir) {
 
         start += batchSize;
         if (start >= totalAvail || entries.length < batchSize) break;
-        await delay(400);
+        await delay(1200);  // Scopus rate limit safety margin
     }
 
     // Fill sisa slot dengan paywall candidates
@@ -942,7 +1007,7 @@ async function scrapeSemantic(hasilAkhir) {
                 try {
                     const detail = await httpsGet(
                         `https://api.semanticscholar.org/graph/v1/paper/DOI:${doi}?fields=abstract`,
-                        { 'x-api-key': apiKey || '' }
+                        apiKey ? { 'x-api-key': apiKey } : {}
                     );
                     const candidate = cleanAbstract(detail?.abstract);
                     if (candidate && candidate.length >= ABSTRACT_MIN_LENGTH) abstract = candidate;
@@ -1024,7 +1089,7 @@ async function scrapeSemantic(hasilAkhir) {
         const stalled = count === countBefore && papers.length < 5;
         if (offset >= total || stalled) break;
 
-        await delay(400);
+        await delay(800);  // Semantic Scholar rate limit safety margin
     }
 
     const remainingSemantic = TARGET - count;
@@ -1057,10 +1122,14 @@ async function main() {
 
     save(hasilAkhir);
     console.log(`Saved ${hasilAkhir.length} total items to jurnal_mentah_${JOB_ID}.json`);
-    process.exit(0);
+    // Let process exit naturally instead of process.exit(0) to allow pending writes to complete
 }
 
-main().catch(err => {
+main().then(() => {
+    // stdout might have pending async writes, wait briefly to flush then force exit
+    try { process.stdin.destroy(); } catch (_) {}
+    setTimeout(() => { process.exit(0); }, 500);
+}).catch(err => {
     console.error(' Fatal error:', err);
     process.exit(1);
 });
