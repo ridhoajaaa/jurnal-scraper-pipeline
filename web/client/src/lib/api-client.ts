@@ -19,15 +19,14 @@ apiClient.interceptors.response.use(
     return response;
   },
   (error) => {
-    if (error.response) {
-      // If server returns 401 (Unauthorized), session is invalid/expired. Auto logout.
-      if (error.response.status === 401) {
+    if (error.response.status === 401) {
+      // Jangan redirect kalau ini adalah login request itu sendiri
+      if (!error.config?.url?.includes('/auth/login')) {
         useAuthStore.getState().logout();
-        // Redirect to login page
         window.location.href = "/login";
       }
     }
-    
+
     // Pass the error back with status preserved for retry logic
     const message = error.response?.data?.message || error.response?.data?.error || error.message || "An unexpected error occurred";
     const enrichedError: any = new Error(message);

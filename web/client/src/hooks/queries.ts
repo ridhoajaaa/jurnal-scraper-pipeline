@@ -9,16 +9,17 @@ import { useAuthStore } from "@/stores/authStore";
 export function useLogin() {
   const setCredentials = useAuthStore((state) => state.setCredentials);
   const queryClient = useQueryClient();
-
   return useMutation({
     mutationFn: api.auth.login,
     onSuccess: (data) => {
-      // Data expected: { success, username, role, isPremium, quotaUsed, quotaLimit, quotaRemaining, quotaExhausted, dailyScrapedToday, dailyLimit }
       if (data.success && data.username) {
         setCredentials(data as User);
         queryClient.invalidateQueries({ queryKey: ["profile"] });
       }
     },
+    onError: (_err: any) => {
+      // Error sudah di-handle di Login.tsx via mutate options
+    }
   });
 }
 
@@ -45,7 +46,7 @@ export function useLogout() {
 export function useProfile() {
   const { isAuthenticated } = useAuthStore();
   const updateUser = useAuthStore((state) => state.updateUser);
-  
+
   const query = useQuery({
     queryKey: ["profile"],
     queryFn: api.profile.get,
@@ -88,7 +89,7 @@ export function useUpdatePassword() {
 
 export function useActivatePremium() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: api.profile.activatePremium,
     onSuccess: (data) => {
@@ -110,7 +111,7 @@ export function useJournals() {
 
 export function useDeleteJournals() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: api.journals.delete,
     onSuccess: () => {
@@ -130,7 +131,7 @@ export function useSavedJournals() {
 
 export function useSaveJournal() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: api.saved.save,
     onSuccess: () => {
@@ -142,7 +143,7 @@ export function useSaveJournal() {
 
 export function useDeleteSavedJournal() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: api.saved.delete,
     onSuccess: () => {
@@ -154,7 +155,7 @@ export function useDeleteSavedJournal() {
 
 export function useUpdateSavedNote() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: ({ id, note }: { id: string; note: string }) => api.saved.updateNote(id, note),
     onSuccess: () => {
@@ -174,7 +175,7 @@ export function useStats() {
   // Alias for Dashboard compatibility if needed, using GET /api/saved/stats as general stats
   return useQuery({
     queryKey: ["stats"],
-    queryFn: api.saved.getStats, 
+    queryFn: api.saved.getStats,
   });
 }
 
@@ -182,7 +183,7 @@ export function useStats() {
 
 export function useStartScrape() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: api.scrape.start,
     onSuccess: () => {
@@ -203,7 +204,7 @@ export function useActiveJob() {
 
 export function useCancelScrape() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: api.scrape.cancel,
     onSuccess: () => {
@@ -216,7 +217,7 @@ export function useCancelScrape() {
 
 export function useGenerateSummary() {
   return useMutation({
-    mutationFn: ({ journalIds, language }: { journalIds: string[]; language: "id" | "en" }) => 
+    mutationFn: ({ journalIds, language }: { journalIds: string[]; language: "id" | "en" }) =>
       api.summary.generate(journalIds, language),
   });
 }

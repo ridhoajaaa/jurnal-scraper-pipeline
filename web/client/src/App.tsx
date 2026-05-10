@@ -113,11 +113,11 @@ function App() {
           toastOptions={{
             unstyled: true,
             classNames: {
-              toast: 'flex items-center gap-3 w-full px-4 py-3 rounded-xl border shadow-xl backdrop-blur-lg font-sans text-[13px] bg-white/95 dark:bg-[#111727]/95 border-slate-200 dark:border-slate-700/60 text-slate-800 dark:text-slate-100 shadow-black/10 dark:shadow-black/30',
+              toast: 'flex items-center gap-3 w-full px-4 py-3 rounded-xl border shadow-xl backdrop-blur-lg font-sans text-[14px] min-w-[320px] bg-white/95 dark:bg-[#111727]/95 border-slate-200 dark:border-slate-700/60 text-slate-800 dark:text-slate-100 shadow-black/10 dark:shadow-black/30',
               title: 'font-semibold text-[13px]',
               description: 'text-[11px] text-slate-500 dark:text-slate-400',
               success: '!border-emerald-500/30 !shadow-emerald-500/10 dark:!shadow-emerald-500/5',
-              error: '!border-red-500/30 !shadow-red-500/10 dark:!shadow-red-500/5',
+              error: '!bg-red-50 dark:!bg-red-950/80 !border-red-500/50 !text-red-700 dark:!text-red-300',
               warning: '!border-amber-500/30 !shadow-amber-500/10 dark:!shadow-amber-500/5',
               info: '!border-indigo-500/30 !shadow-indigo-500/10 dark:!shadow-indigo-500/5',
               actionButton: 'bg-indigo-600 text-white text-[11px] font-bold px-3 py-1.5 rounded-lg',

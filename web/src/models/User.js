@@ -18,6 +18,8 @@ const userSchema = new mongoose.Schema({
 
     premiumToken: { type: String, default: null },
     premiumTokenExpiry: { type: Date, default: null },
+    resetPasswordToken: { type: String, default: null },
+    resetPasswordExpiry: { type: Date, default: null },
 
     summaryCount: { type: Number, default: 0 },  // lifetime AI Summary usage
     createdAt: { type: Date, default: Date.now }

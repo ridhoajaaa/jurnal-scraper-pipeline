@@ -66,8 +66,21 @@ async function sendPremiumTokenEmail(to, username, token) {
         return { error: err.message };
     }
 }
+async function sendPasswordResetEmail(to, username, token) {
+    if (!resend) return { error: 'Email not configured' };
+    const link = `${APP_URL}/reset-password?token=${token}`;
+    try {
+        await resend.emails.send({
+            from: 'LitAssist <onboarding@resend.dev>',
+            to,
+            subject: '[LitAssist] Reset Password',
+            html: `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#fff;border-radius:12px;"><h2 style="color:#4f46e5;">LitAssist</h2><p>Halo <strong>${username}</strong>,</p><a href="${link}" style="display:inline-block;margin:20px 0;padding:12px 28px;background:#4f46e5;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;">Reset Password</a><p style="color:#9ca3af;font-size:13px;">Link berlaku 1 jam.</p></div>`
+        });
+        return { ok: true };
+    } catch (err) {
+        logger.error('sendPasswordResetEmail failed', { error: err.message });
+        return { error: err.message };
+    }
+}
 
-module.exports = {
-    sendVerificationEmail,
-    sendPremiumTokenEmail
-};
+module.exports = { sendVerificationEmail, sendPremiumTokenEmail, sendPasswordResetEmail };

@@ -25,6 +25,11 @@ export function Login() {
   const registerMutation = useRegister();
   
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotLoading, setForgotLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("login");
 
   // Form states
@@ -38,7 +43,7 @@ export function Login() {
   const handleLoginSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     loginMutation.mutate(
-      { email: loginEmail, password: loginPassword },
+      { email: loginEmail, password: loginPassword, rememberMe },
       {
         onSuccess: (data) => {
           if (data.success) {
@@ -188,6 +193,8 @@ export function Login() {
                       <div className="relative flex items-center justify-center">
                         <input
                           type="checkbox"
+                          checked={rememberMe}
+                          onChange={(e) => setRememberMe(e.target.checked)}
                           className="peer appearance-none w-4 h-4 rounded-[4px] border border-slate-300 dark:border-[#1f2937] bg-white dark:bg-[#0d111f] checked:bg-indigo-600 checked:border-indigo-600 focus:ring-indigo-500/20 transition-colors cursor-pointer"
                         />
                         <svg className="absolute w-3 h-3 text-white pointer-events-none opacity-0 peer-checked:opacity-100" viewBox="0 0 14 10" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -196,12 +203,13 @@ export function Login() {
                       </div>
                       <span className="text-[13px] font-medium text-slate-600 dark:text-gray-400 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">Remember me</span>
                     </label>
-                    <Link
-                      to="#"
+                    <button
+                      type="button"
+                      onClick={() => { setShowForgot(true); setForgotSent(false); setForgotEmail(""); }}
                       className="text-[13px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition-colors"
                     >
                       Forgot password?
-                    </Link>
+                    </button>
                   </div>
                   <Button
                     type="submit"
@@ -305,6 +313,62 @@ export function Login() {
           </CardContent>
         </Card>
       </motion.div>
+
+      {showForgot && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white dark:bg-[#161d2f] border border-slate-200 dark:border-[#1f2937] rounded-2xl p-6 w-full max-w-sm shadow-2xl"
+          >
+            <h3 className="text-lg font-black text-slate-900 dark:text-white mb-1">Reset Password</h3>
+            {!forgotSent ? (
+              <>
+                <p className="text-[13px] text-slate-500 dark:text-gray-400 mb-4">Masukkan email kamu untuk menerima link reset password.</p>
+                <Input
+                  type="email"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="bg-white dark:bg-[#0d111f] border-slate-200 dark:border-[#1f2937] text-slate-900 dark:text-white mb-3 h-11"
+                />
+                <div className="flex gap-2">
+                  <Button variant="ghost" className="flex-1" onClick={() => setShowForgot(false)}>Batal</Button>
+                  <Button
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white"
+                    disabled={forgotLoading || !forgotEmail}
+                    onClick={async () => {
+                      setForgotLoading(true);
+                      try {
+                        await fetch('/api/auth/forgot-password', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email: forgotEmail })
+                        });
+                        setForgotSent(true);
+                      } catch (_) {
+                        toast.error("Gagal mengirim. Coba lagi.");
+                      } finally {
+                        setForgotLoading(false);
+                      }
+                    }}
+                  >
+                    {forgotLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Kirim"}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-[13px] text-slate-500 dark:text-gray-400 mb-4">
+                  Kalau email terdaftar, link reset sudah dikirim. Cek inbox atau spam.<br/><br/>
+                  <span className="text-amber-500 font-medium">Catatan: Email belum aktif. Reset link bisa dilihat di Docker logs.</span>
+                </p>
+                <Button className="w-full bg-indigo-600 hover:bg-indigo-500 text-white" onClick={() => setShowForgot(false)}>Tutup</Button>
+              </>
+            )}
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

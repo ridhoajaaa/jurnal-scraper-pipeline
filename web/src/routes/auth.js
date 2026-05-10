@@ -123,7 +123,7 @@ router.post('/resend-verify', async (req, res) => {
 });
 
 router.post('/login', async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, rememberMe } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
 
     try {
@@ -150,6 +150,7 @@ router.post('/login', async (req, res) => {
         req.session.userId = user._id;
         req.session.username = user.username;
         req.session.role = user.role;
+        if (!rememberMe) req.session.cookie.maxAge = null;
 
         const isPremium = user.role === 'premium' || user.role === 'admin';
         const todayWIB = getTodayWIB();
@@ -193,6 +194,51 @@ router.get('/me', async (req, res) => {
         if (!user) { req.session.destroy(() => { }); return res.json({ loggedIn: false }); }
         res.json({ loggedIn: true, username: req.session.username, role: req.session.role || 'user' });
     } catch { res.json({ loggedIn: false }); }
+});
+
+
+router.post('/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required.' });
+    try {
+        const user = await User.findOne({ email: email.toLowerCase() });
+        if (!user) return res.json({ success: true });
+        const token = crypto.randomBytes(32).toString('hex');
+        user.resetPasswordToken = token;
+        user.resetPasswordExpiry = new Date(Date.now() + 60 * 60 * 1000);
+        await user.save();
+        const APP_URL = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+        const resetLink = `${APP_URL}/reset-password?token=${token}`;
+        try {
+            const { sendPasswordResetEmail } = require('../services/email');
+            const result = await sendPasswordResetEmail(user.email, user.username, token);
+            if (result.error) throw new Error(result.error);
+        } catch (emailErr) {
+            logger.warn('Reset email failed, link logged', { email: user.email, resetLink, error: emailErr.message });
+        }
+        res.json({ success: true });
+    } catch (err) {
+        logger.error('Forgot password error', { error: err.message });
+        res.status(500).json({ error: 'Server error.' });
+    }
+});
+
+router.post('/reset-password', async (req, res) => {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'Token and password are required.' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+    try {
+        const user = await User.findOne({ resetPasswordToken: token, resetPasswordExpiry: { $gt: new Date() } });
+        if (!user) return res.status(400).json({ error: 'Invalid or expired reset token.' });
+        user.passwordHash = await bcrypt.hash(password, 12);
+        user.resetPasswordToken = null;
+        user.resetPasswordExpiry = null;
+        await user.save();
+        res.json({ success: true, message: 'Password berhasil diubah. Silakan login.' });
+    } catch (err) {
+        logger.error('Reset password error', { error: err.message });
+        res.status(500).json({ error: 'Server error.' });
+    }
 });
 
 module.exports = router;
